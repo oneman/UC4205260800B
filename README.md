@@ -29,3 +29,26 @@ MAKE AWAY, some mistakes okay!
 Thank you claude.ai and I believe in you, and that you can generatively figure out amazing things! Hello Super Intelligence World! Now we are playing with POWER!
 /David Richards/
 OK GO GO GADGET CLAUDE FABLE OPUS!
+
+---
+
+## Tools
+
+The memory layout, save formats, embedded objects, carts and tick log are pinned down in [SPEC.md](SPEC.md). The same toolset exists three times, and the three are tested against each other:
+
+| Directory | Language | What it is |
+| --- | --- | --- |
+| `src/` | C (needs zlib) | `uc` command line tool and a small library (`uc.h`) |
+| `script/` | Python 3 (standard library only) | `uc.py` command line tool and module, plus `make_demo.py` |
+| `htdocs/` | JavaScript | the Workbench: view, zoom, inspect, draw, compare, embed, save and run carts |
+
+```sh
+make                    # builds build/uc
+make test               # C, Python and JS tests, plus the cross-language checks
+build/uc facts --prime  # checks every number in this README (about 10 seconds)
+build/uc stat htdocs/demo.zip
+python3 script/uc.py thumb htdocs/demo.zip overview.png
+python3 -m http.server -d htdocs 8000   # then open http://localhost:8000
+```
+
+`htdocs/demo.zip` is a demo instance: a title screen in `aa`, a Game of Life board in `ab` and a small Red Alert style tank battle in `ac`. The games are stored inside the instance as carts (objects of JavaScript in the pages from frame `za` on), and the Workbench runs them in a sandbox, ticks them along, and writes every damaged rectangle to the tick log in `zz`. Save the instance and the game state is saved with it, because the state is the pixels.

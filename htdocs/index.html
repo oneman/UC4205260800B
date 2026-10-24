@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UC4205260800B Workbench</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #d7dde5; --muted: #8b95a3;
+    --accent: #6cb6ff; --good: #7ee787; --bad: #ff7b72;
+    font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+  body { display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: 1fr 360px; }
+  header { grid-column: 1 / 3; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 14px; margin: 0 10px 0 2px; letter-spacing: .04em; }
+  header .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  button, select, input { font: inherit; color: var(--text); background: #21262d; border: 1px solid var(--line);
+    border-radius: 5px; padding: 3px 8px; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: #1f3a5c; border-color: var(--accent); }
+  input[type=color] { padding: 0 2px; width: 34px; height: 24px; }
+  input[type=number] { width: 58px; }
+  #stage { position: relative; overflow: hidden; background: #000; }
+  #view { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; cursor: crosshair; }
+  #view.pan { cursor: grab; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 8px; }
+  aside h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+  aside h2:first-child { margin-top: 0; }
+  pre { margin: 0; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; overflow-x: auto; }
+  .kv { display: grid; grid-template-columns: 74px 1fr; gap: 1px 8px; font: 12px ui-monospace, monospace; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .obj { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; }
+  .obj .t { color: var(--muted); font-size: 11px; word-break: break-all; }
+  .obj .bad { color: var(--bad); }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
+  textarea { width: 100%; height: 60px; font: 12px ui-monospace, monospace; color: var(--text); background: #0d1117;
+    border: 1px solid var(--line); border-radius: 5px; }
+  footer { grid-column: 1 / 3; padding: 3px 8px; border-top: 1px solid var(--line); color: var(--muted);
+    font: 12px ui-monospace, monospace; background: var(--panel); white-space: nowrap; overflow: hidden; }
+  #modal { position: fixed; inset: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    display: none; flex-direction: column; z-index: 5; box-shadow: 0 10px 40px #000a; }
+  #modal.open { display: flex; }
+  #modal header { border: 0; border-bottom: 1px solid var(--line); }
+  #modal pre { flex: 1; padding: 10px; overflow: auto; white-space: pre-wrap; }
+  #drop { position: fixed; inset: 0; background: #1f3a5ccc; display: none; place-items: center; font-size: 22px; z-index: 6; }
+  #drop.on { display: grid; }
+  @media (max-width: 800px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto 60vh auto auto; }
+    header, footer { grid-column: 1; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>UC4205260800B</h1>
+  <button id="open">Open…</button>
+  <button id="demo">Demo</button>
+  <button id="new">New</button>
+  <button id="saveHd">Save HD zip</button>
+  <button id="save4k">Save 4K zip</button>
+  <span class="sep"></span>
+  <button id="modeView" class="on" title="Drag to pan, click to inspect">View</button>
+  <button id="modeDraw" title="Drag to draw into memory">Draw</button>
+  <button id="modePlay" title="Mouse and keys go to the running cart">Play</button>
+  <input id="color" type="color" value="#ffcc33" title="Brush colour">
+  <input id="brush" type="number" min="1" max="200" value="4" title="Brush size (pixels)">
+  <span class="sep"></span>
+  <button id="fit">Whole system</button>
+  <button id="compare" title="Open a second instance and show what differs">Compare…</button>
+  <span class="sep"></span>
+  <input id="goto" placeholder="go: ab, ab:10,20, p987188, 0x…" size="24">
+</header>
+
+<div id="stage"><canvas id="view"></canvas></div>
+
+<aside>
+  <h2>Instance</h2>
+  <div class="kv" id="stats"></div>
+
+  <h2>Inspector</h2>
+  <div class="kv" id="where"></div>
+  <pre id="hex"></pre>
+  <div class="row"><textarea id="poke" placeholder="Text to write at the inspected address"></textarea></div>
+  <div class="row"><button id="pokeBtn">Write text here</button></div>
+
+  <h2>Cart</h2>
+  <div class="row">
+    <button id="cartPause">Pause</button><button id="cartStep">Step</button><button id="cartStop">Stop</button>
+    <label>tps <input id="tps" type="number" min="1" max="120" value="30"></label>
+  </div>
+  <div class="kv" id="cartInfo"></div>
+
+  <h2>Objects</h2>
+  <div id="objects"></div>
+  <div class="row">
+    <button id="embed">Embed file…</button>
+    <label><input id="asCart" type="checkbox"> as cart on frames</label>
+    <input id="cartFrames" value="ad" size="6">
+  </div>
+
+  <h2>Tick log</h2>
+  <pre id="ticks"></pre>
+</aside>
+
+<footer id="status">Drop a .zip here, or press Demo.</footer>
+
+<div id="modal"><header><h1 id="modalTitle"></h1><button id="modalClose">Close</button></header><pre id="modalBody"></pre></div>
+<div id="drop">Drop an instance .zip to open it</div>
+<input id="file" type="file" accept=".zip" hidden>
+<input id="file2" type="file" accept=".zip" hidden>
+<input id="embedFile" type="file" hidden>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
