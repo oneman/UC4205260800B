@@ -114,6 +114,25 @@ void uc_compact(uc_t *u)
         if (u->pages[i] && all_zero(u->pages[i], UC_PAGE)) { free(u->pages[i]); u->pages[i] = NULL; }
 }
 
+void uc_rect_read(const uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h, uint8_t *rgb)
+{
+    for (unsigned y = 0; y < h; y++) uc_read(u, uc_addr(X, Y + y), rgb + (size_t)y * w * 3, (size_t)w * 3);
+}
+
+int uc_rect_write(uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h, const uint8_t *rgb)
+{
+    for (unsigned y = 0; y < h; y++)
+        if (uc_write(u, uc_addr(X, Y + y), rgb + (size_t)y * w * 3, (size_t)w * 3)) return -1;
+    return 0;
+}
+
+int uc_rect_is_zero(const uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h)
+{
+    for (unsigned y = 0; y < h; y++)
+        if (!uc_range_is_zero(u, uc_addr(X, Y + y), (uint64_t)w * 3)) return 0;
+    return 1;
+}
+
 void uc_frame_name(unsigned frame, char out[3])
 {
     out[0] = (char)('a' + frame / UC_GRID);
@@ -256,12 +275,22 @@ static uint64_t rd64(const uint8_t *p) { return rd32(p) | (uint64_t)rd32(p + 4) 
 
 typedef struct { char name[16]; uint32_t crc, size; uint64_t offset; } zent_t;
 
+/* Frame idx of the given format as a mosaic rectangle. */
+static void frame_rect(enum uc_format fmt, unsigned idx, unsigned *X, unsigned *Y, unsigned *w, unsigned *h)
+{
+    unsigned cols = fmt == UC_FMT_HD ? UC_GRID : UC_GRID / 2;
+    *w = fmt == UC_FMT_HD ? UC_W : UC_W4K;
+    *h = fmt == UC_FMT_HD ? UC_H : UC_H4K;
+    *X = idx % cols * *w;
+    *Y = idx / cols * *h;
+}
+
 static int frame_bytes(const uc_t *u, enum uc_format fmt, unsigned idx, uint8_t *buf, char *name)
 {
-    uint64_t size = fmt == UC_FMT_HD ? UC_FRAME_BYTES : UC_FRAME4K_BYTES;
-    uint64_t addr = idx * size;
-    if (uc_range_is_zero(u, addr, size)) return 0;
-    uc_read(u, addr, buf, (size_t)size);
+    unsigned X, Y, w, h;
+    frame_rect(fmt, idx, &X, &Y, &w, &h);
+    if (uc_rect_is_zero(u, X, Y, w, h)) return 0;
+    uc_rect_read(u, X, Y, w, h, buf);
     if (fmt == UC_FMT_HD) { uc_frame_name(idx, name); strcat(name, ".png"); }
     else sprintf(name, "%u.png", idx + 1);
     return 1;
@@ -290,7 +319,7 @@ int uc_save(const uc_t *u, const char *path, enum uc_format fmt)
         e->offset = pos;
         uint8_t lh[30] = { 0 };
         size_t nl = strlen(e->name);
-        le32(lh, 0x04034b50); le16(lh + 4, 20); le32(lh + 14, e->crc);
+        le32(lh, 0x04034b50); le16(lh + 4, 20); le16(lh + 12, 0x21); le32(lh + 14, e->crc);
         le32(lh + 18, e->size); le32(lh + 22, e->size); le16(lh + 26, (uint16_t)nl);
         int ok = fwrite(lh, 30, 1, f) == 1 && fwrite(e->name, nl, 1, f) == 1 && fwrite(png, plen, 1, f) == 1;
         free(png);
@@ -307,7 +336,7 @@ int uc_save(const uc_t *u, const char *path, enum uc_format fmt)
         int z64 = e->offset >= 0xffffffffu;
         uint8_t ch[46] = { 0 }, ex[12];
         size_t nl = strlen(e->name);
-        le32(ch, 0x02014b50); le16(ch + 4, z64 ? 45 : 20); le16(ch + 6, z64 ? 45 : 20);
+        le32(ch, 0x02014b50); le16(ch + 4, z64 ? 45 : 20); le16(ch + 6, z64 ? 45 : 20); le16(ch + 14, 0x21);
         le32(ch + 16, e->crc); le32(ch + 20, e->size); le32(ch + 24, e->size);
         le16(ch + 28, (uint16_t)nl); le16(ch + 30, z64 ? 12 : 0);
         le32(ch + 42, z64 ? 0xffffffffu : (uint32_t)e->offset);
@@ -444,8 +473,9 @@ int uc_load(uc_t *u, const char *path, enum uc_format *fmt_out)
         int r = uc_png_decode(png, (size_t)usize, w, h, rgb);
         free(png);
         if (r) { fail("%.*s: %s", (int)nl, name, uc_error()); goto out; }
-        uint64_t size = (uint64_t)w * h * 3;
-        if (uc_write(u, idx * size, rgb, (size_t)size)) goto out;
+        unsigned X, Y, fw, fh;
+        frame_rect(fmt, idx, &X, &Y, &fw, &fh);
+        if (uc_rect_write(u, X, Y, fw, fh, rgb)) goto out;
     }
     if (fmt_out) *fmt_out = seen < 0 ? UC_FMT_HD : (enum uc_format)seen;
     ret = 0;

@@ -34,7 +34,7 @@ OK GO GO GADGET CLAUDE FABLE OPUS!
 
 ## Tools
 
-The memory layout, save formats, embedded objects, carts and tick log are pinned down in [SPEC.md](SPEC.md). The same toolset exists three times, and the three are tested against each other:
+Memory is one row-major 49920 × 28080 RGB framebuffer (149760 bytes per row); `aa.png` is its top-left 1920 × 1080 tile and `1.png` is its top-left 3840 × 2160 tile (`aa ab / ba bb`). The memory layout, save formats, embedded objects, carts and tick log are pinned down in [SPEC.md](SPEC.md). The same toolset exists three times, and the three are tested against each other:
 
 | Directory | Language | What it is |
 | --- | --- | --- |
@@ -51,4 +51,4 @@ python3 script/uc.py thumb htdocs/demo.zip overview.png
 python3 -m http.server -d htdocs 8000   # then open http://localhost:8000
 ```
 
-`htdocs/demo.zip` is a demo instance: a title screen in `aa`, a Game of Life board in `ab` and a small Red Alert style tank battle in `ac`. The games are stored inside the instance as carts (objects of JavaScript in the pages from frame `za` on), and the Workbench runs them in a sandbox, ticks them along, and writes every damaged rectangle to the tick log in `zz`. Save the instance and the game state is saved with it, because the state is the pixels.
+`htdocs/demo.zip` is a demo instance: a title screen in `aa`, a Game of Life board in `ab` and a small Red Alert style tank battle in `ac`. The games are stored inside the instance as carts (objects of JavaScript in the pages at the top of grid row `z`), and the Workbench runs them in a sandbox, ticks them along, and writes every damaged rectangle to the tick log along the bottom of the mosaic. Save the instance and the game state is saved with it, because the state is the pixels.

@@ -20,6 +20,7 @@
 #define UC_FRAMES4K     169u                /* 13 * 13 */
 #define UC_MOSAIC_W     49920u
 #define UC_MOSAIC_H     28080u
+#define UC_STRIDE       149760u             /* bytes per mosaic row: 49920 * 3 */
 
 #define UC_OBJ_MAGIC     "UCOBJ1\n"
 #define UC_OBJ_AREA_PAGE 987188u            /* first page fully inside frame za */
@@ -44,6 +45,15 @@ int  uc_range_is_zero(const uc_t *u, uint64_t addr, uint64_t len);
 uint64_t uc_nonzero_pages(const uc_t *u);
 /* Drop pages that are allocated but contain only zeros. */
 void uc_compact(uc_t *u);
+
+/* Memory is one row-major 49920x28080 RGB framebuffer (the mosaic).
+ * HD frame f is the 1920x1080 tile at column f % 26, row f / 26;
+ * 4K frame k is the 3840x2160 tile at column k % 13, row k / 13. */
+static inline uint64_t uc_addr(unsigned X, unsigned Y) { return (uint64_t)Y * UC_STRIDE + (uint64_t)X * 3; }
+/* Copy a rectangle of the mosaic to or from packed RGB rows. */
+void uc_rect_read(const uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h, uint8_t *rgb);
+int  uc_rect_write(uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h, const uint8_t *rgb);
+int  uc_rect_is_zero(const uc_t *u, unsigned X, unsigned Y, unsigned w, unsigned h);
 
 /* Frame names: 0 -> "aa", 675 -> "zz". Returns -1 for a bad name. */
 void uc_frame_name(unsigned frame, char out[3]);

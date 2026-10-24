@@ -12,12 +12,22 @@ export const W4K = 3840, H4K = 2160;
 export const FRAME4K_BYTES = W4K * H4K * 3;
 export const FRAMES4K = 169;
 export const MOSAIC_W = W * GRID, MOSAIC_H = H * GRID;
+export const STRIDE = MOSAIC_W * 3;   // memory is one row-major MOSAIC_W x MOSAIC_H RGB framebuffer
 export const OBJ_AREA_PAGE = 987188;
 export const TICK_PAGE = 1025651;
 export const TICK_CAP = 261888;
 export const CART_TYPE = 'application/x-uc-cart+javascript';
 
 export const frameName = (i) => String.fromCharCode(97 + Math.floor(i / GRID), 97 + (i % GRID));
+
+// Address of mosaic pixel X, Y.
+export const addr = (X, Y) => Y * STRIDE + X * 3;
+
+// Mosaic X, Y of the top-left pixel of HD frame i (0..675), or 4K frame i (0..168) with size '4k'.
+export function frameOrigin(i, size = 'hd') {
+  return size === 'hd' ? [(i % GRID) * W, Math.floor(i / GRID) * H]
+    : [(i % (GRID / 2)) * W4K, Math.floor(i / (GRID / 2)) * H4K];
+}
 
 export function frameIndex(name) {
   if (!/^[a-z]{2}$/.test(name)) throw new Error(`bad frame name ${name} (aa..zz)`);
@@ -30,7 +40,8 @@ export function parseAddr(s) {
   let m;
   if ((m = /^p(\d+)$/.exec(s))) return Number(m[1]) * PAGE;
   if ((m = /^([a-z]{2}):(\d+),(\d+)$/.exec(s))) {
-    return frameIndex(m[1]) * FRAME_BYTES + (Number(m[3]) * W + Number(m[2])) * 3;
+    const [X, Y] = frameOrigin(frameIndex(m[1]));
+    return addr(X + Number(m[2]), Y + Number(m[3]));
   }
   const a = Number(s);
   if (!Number.isInteger(a) || a < 0 || a >= BYTES) throw new Error(`bad address ${s}`);
@@ -39,11 +50,11 @@ export function parseAddr(s) {
 
 // Describe an address the same way `uc where` does.
 export function where(a) {
-  const frame = Math.floor(a / FRAME_BYTES), off = a % FRAME_BYTES, px = Math.floor(off / 3);
-  const x = px % W, y = Math.floor(px / W);
+  const px = Math.floor(a / 3), X = px % MOSAIC_W, Y = Math.floor(px / MOSAIC_W);
+  const frame = Math.floor(Y / H) * GRID + Math.floor(X / W);
   return {
     addr: a, page: Math.floor(a / PAGE), pageOffset: a % PAGE, frame, frameName: frameName(frame),
-    x, y, channel: 'RGB'[off % 3], mosaicX: (frame % GRID) * W + x, mosaicY: Math.floor(frame / GRID) * H + y,
+    x: X % W, y: Y % H, channel: 'RGB'[a % 3], mosaicX: X, mosaicY: Y,
   };
 }
 
@@ -241,7 +252,7 @@ const isZero = (a) => { for (let i = 0; i < a.length; i++) if (a[i]) return fals
 
 export class Instance {
   constructor() {
-    this.frames = new Array(FRAMES).fill(null); // Uint8Array(FRAME_BYTES) or null for all zero
+    this.frames = new Array(FRAMES).fill(null); // Uint8Array(FRAME_BYTES) per HD tile, or null for all zero
     this.format = 'hd';
     this.version = 0;                           // bumped on every write, for redraws
   }
@@ -251,26 +262,43 @@ export class Instance {
     return this.frames[i];
   }
 
-  read(addr, n) {
+  // Where linear address a lives: tile f, offset in the tile, and how many
+  // bytes follow contiguously in that tile (to the end of the tile row).
+  static locate(a) {
+    const px = Math.floor(a / 3), X = px % MOSAIC_W, Y = Math.floor(px / MOSAIC_W), x = X % W, c = a % 3;
+    return [Math.floor(Y / H) * GRID + Math.floor(X / W), ((Y % H) * W + x) * 3 + c, (W - x) * 3 - c];
+  }
+
+  read(a, n) {
     const out = new Uint8Array(n);
-    for (let pos = 0; pos < n && addr + pos < BYTES;) {
-      const a = addr + pos, f = Math.floor(a / FRAME_BYTES), off = a - f * FRAME_BYTES;
-      const k = Math.min(FRAME_BYTES - off, n - pos);
+    for (let pos = 0; pos < n && a + pos < BYTES;) {
+      const [f, off, run] = Instance.locate(a + pos), k = Math.min(run, n - pos);
       if (this.frames[f]) out.set(this.frames[f].subarray(off, off + k), pos);
       pos += k;
     }
     return out;
   }
 
-  write(addr, data) {
-    if (addr < 0 || addr + data.length > BYTES) throw new Error(`write of ${data.length} bytes at ${addr} is out of range`);
+  write(a, data) {
+    if (a < 0 || a + data.length > BYTES) throw new Error(`write of ${data.length} bytes at ${a} is out of range`);
     for (let pos = 0; pos < data.length;) {
-      const a = addr + pos, f = Math.floor(a / FRAME_BYTES), off = a - f * FRAME_BYTES;
-      const k = Math.min(FRAME_BYTES - off, data.length - pos), piece = data.subarray(pos, pos + k);
+      const [f, off, run] = Instance.locate(a + pos), k = Math.min(run, data.length - pos);
+      const piece = data.subarray(pos, pos + k);
       if (this.frames[f] || !isZero(piece)) this.frame(f, true).set(piece, off);
       pos += k;
     }
     this.version++;
+  }
+
+  // Packed RGB rows of a mosaic rectangle, and the reverse.
+  readRect(X, Y, w, h) {
+    const out = new Uint8Array(w * h * 3);
+    for (let y = 0; y < h; y++) out.set(this.read(addr(X, Y + y), w * 3), y * w * 3);
+    return out;
+  }
+
+  writeRect(X, Y, w, h, rgb) {
+    for (let y = 0; y < h; y++) this.write(addr(X, Y + y), rgb.subarray(y * w * 3, (y + 1) * w * 3));
   }
 
   getPixel(frame, x, y) {
@@ -294,22 +322,31 @@ export class Instance {
   frameInUse(i) { return !!this.frames[i] && !isZero(this.frames[i]); }
 
   pageIsZero(p) {
-    const a = p * PAGE, f = Math.floor(a / FRAME_BYTES), end = a + PAGE;
-    if (!this.frames[f] && (Math.floor((end - 1) / FRAME_BYTES) === f || !this.frames[f + 1])) return true;
-    return isZero(this.read(a, PAGE));
+    // A page covers at most two mosaic rows, each within at most two tiles.
+    const first = Math.floor((p * PAGE) / 3), last = Math.floor((p * PAGE + PAGE - 1) / 3);
+    const ys = Math.floor(first / MOSAIC_W), ye = Math.floor(last / MOSAIC_W);
+    const pts = ys === ye ? [first % MOSAIC_W, last % MOSAIC_W].map((X) => [X, ys])
+      : [[first % MOSAIC_W, ys], [MOSAIC_W - 1, ys], [0, ye], [last % MOSAIC_W, ye]];
+    if (pts.every(([X, Y]) => !this.frames[Instance.mosaic(X, Y)[0]])) return true;
+    return isZero(this.read(p * PAGE, PAGE));
+  }
+
+  // Sorted pages that touch an allocated tile.
+  candidatePages() {
+    const pages = new Set();
+    for (let f = 0; f < FRAMES; f++) {
+      if (!this.frames[f]) continue;
+      const [X, Y] = frameOrigin(f);
+      for (let y = 0; y < H; y++) {
+        const a = addr(X, Y + y);
+        for (let p = Math.floor(a / PAGE); p <= Math.floor((a + W * 3 - 1) / PAGE); p++) pages.add(p);
+      }
+    }
+    return [...pages].sort((a, b) => a - b);
   }
 
   pagesInUse() {
-    let n = 0, last = -1;
-    for (let f = 0; f < FRAMES; f++) {
-      if (!this.frames[f]) continue;
-      const lastPage = Math.floor(((f + 1) * FRAME_BYTES - 1) / PAGE);
-      for (let p = Math.max(last + 1, Math.floor((f * FRAME_BYTES) / PAGE)); p <= lastPage; p++) {
-        if (!this.pageIsZero(p)) n++;
-        last = p;
-      }
-    }
-    return n;
+    return this.candidatePages().filter((p) => !this.pageIsZero(p)).length;
   }
 
   // Free frames that went back to all zeros.
@@ -325,10 +362,10 @@ export class Instance {
       if (!parsed) continue;
       if (seen && seen !== parsed.fmt) throw new Error('zip mixes HD and 4K frame names');
       seen = parsed.fmt;
-      const [w, h, size] = parsed.fmt === 'hd' ? [W, H, FRAME_BYTES] : [W4K, H4K, FRAME4K_BYTES];
+      const [w, h] = parsed.fmt === 'hd' ? [W, H] : [W4K, H4K];
       let rgb;
       try { rgb = await pngDecode(await e.read(), w, h); } catch (err) { throw new Error(`${e.name}: ${err.message}`); }
-      inst.write(parsed.idx * size, rgb);
+      inst.writeRect(...frameOrigin(parsed.idx, parsed.fmt), w, h, rgb);
     }
     inst.format = seen || 'hd';
     inst.compact();
@@ -342,9 +379,11 @@ export class Instance {
         if (this.frameInUse(f)) files.push({ name: `${frameName(f)}.png`, data: await pngEncode(this.frames[f], W, H) });
       }
     } else {
+      // 4K frame k is the 2x2 block of HD frames starting at row 2*(k / 13), column 2*(k % 13).
       for (let k = 0; k < FRAMES4K; k++) {
-        if ([0, 1, 2, 3].every((j) => !this.frameInUse(k * 4 + j))) continue;
-        files.push({ name: `${k + 1}.png`, data: await pngEncode(this.read(k * FRAME4K_BYTES, FRAME4K_BYTES), W4K, H4K) });
+        const r = Math.floor(k / (GRID / 2)) * 2, c = (k % (GRID / 2)) * 2;
+        if ([0, 1, GRID, GRID + 1].every((j) => !this.frameInUse(r * GRID + c + j))) continue;
+        files.push({ name: `${k + 1}.png`, data: await pngEncode(this.readRect(...frameOrigin(k, '4k'), W4K, H4K), W4K, H4K) });
       }
     }
     return zipWrite(files);
@@ -354,16 +393,11 @@ export class Instance {
 
   objects() {
     const out = [];
-    for (let f = 0; f < FRAMES; f++) {
-      const fr = this.frames[f];
-      if (!fr) continue;
-      for (let p = Math.ceil((f * FRAME_BYTES) / PAGE); p * PAGE + 7 <= (f + 1) * FRAME_BYTES; p++) {
-        const o = p * PAGE - f * FRAME_BYTES;
-        if (fr[o] === 0x55 && fr[o + 1] === 0x43 && fr[o + 2] === 0x4f && fr[o + 3] === 0x42 &&
-            fr[o + 4] === 0x4a && fr[o + 5] === 0x31 && fr[o + 6] === 0x0a) {
-          const obj = this.parseObject(p);
-          if (obj) out.push(obj);
-        }
+    for (const p of this.candidatePages()) {
+      const m = this.read(p * PAGE, 7);
+      if (m[0] === 0x55 && m[1] === 0x43 && m[2] === 0x4f && m[3] === 0x42 && m[4] === 0x4a && m[5] === 0x31 && m[6] === 0x0a) {
+        const obj = this.parseObject(p);
+        if (obj) out.push(obj);
       }
     }
     return out;

@@ -20,6 +20,7 @@ W4K, H4K = 3840, 2160
 FRAME4K_BYTES = W4K * H4K * 3
 FRAMES4K = 169
 MOSAIC_W, MOSAIC_H = W * GRID, H * GRID
+STRIDE = MOSAIC_W * 3  # memory is one row-major MOSAIC_W x MOSAIC_H RGB framebuffer
 OBJ_MAGIC = b"UCOBJ1\n"
 OBJ_AREA_PAGE = 987188
 TICK_PAGE = 1025651
@@ -39,6 +40,18 @@ def frame_index(name):
     return (ord(name[0]) - 97) * GRID + ord(name[1]) - 97
 
 
+def addr(X, Y):
+    """Address of mosaic pixel X, Y."""
+    return Y * STRIDE + X * 3
+
+
+def frame_origin(frame, size="hd"):
+    """Mosaic X, Y of the top-left pixel of an HD frame (0..675) or 4K frame (0..168)."""
+    if size == "hd":
+        return frame % GRID * W, frame // GRID * H
+    return frame % (GRID // 2) * W4K, frame // (GRID // 2) * H4K
+
+
 def parse_addr(s):
     """Decimal, 0x hex, pN (page N) or FRAME:X,Y."""
     if s[:1] == "p" and s[1:].isdigit():
@@ -50,7 +63,8 @@ def parse_addr(s):
         x, y = (int(v) for v in s[3:].split(","))
         if not (0 <= x < W and 0 <= y < H):
             raise ValueError(f"pixel {x},{y} out of range")
-        return frame_index(s[:2]) * FRAME_BYTES + (y * W + x) * 3
+        X, Y = frame_origin(frame_index(s[:2]))
+        return addr(X + x, Y + y)
     a = int(s, 0)
     if not 0 <= a < BYTES:
         raise ValueError(f"address {a} out of range")
@@ -187,38 +201,57 @@ class Instance:
             return True
         return self.read(addr, n) == bytes(n)
 
-    def _chunks_in_use(self, size):
-        """Indices of size-byte chunks (frames) that hold nonzero bytes."""
+    def read_rect(self, X, Y, w, h):
+        """Packed RGB rows of a mosaic rectangle."""
+        return b"".join(self.read(addr(X, Y + y), w * 3) for y in range(h))
+
+    def write_rect(self, X, Y, w, h, rgb):
+        for y in range(h):
+            self.write(addr(X, Y + y), rgb[y * w * 3:(y + 1) * w * 3])
+
+    def rect_is_zero(self, X, Y, w, h):
+        return all(self.range_is_zero(addr(X, Y + y), w * 3) for y in range(h))
+
+    def _tiles_in_use(self, size):
+        """Indices of HD or 4K frames that hold nonzero bytes."""
+        tw, th = (W, H) if size == "hd" else (W4K, H4K)
+        cols = MOSAIC_W // tw
         touched = set()
         for p in self.pages:
-            if not self.page_is_zero(p):
-                touched.add(p * PAGE // size)
-                touched.add(((p + 1) * PAGE - 1) // size)
-        return sorted(i for i in touched if i * size < BYTES and not self.range_is_zero(i * size, size))
+            if self.page_is_zero(p):
+                continue
+            first, last = p * PAGE // 3, ((p + 1) * PAGE - 1) // 3
+            ys, xs, ye, xe = first // MOSAIC_W, first % MOSAIC_W, last // MOSAIC_W, last % MOSAIC_W
+            for X, Y in ((xs, ys), (MOSAIC_W - 1, ys), (0, ye), (xe, ye)):
+                if (Y, X) >= (ys, xs) and (Y, X) <= (ye, xe):
+                    touched.add(Y // th * cols + X // tw)
+        return sorted(t for t in touched
+                      if not self.rect_is_zero(t % cols * tw, t // cols * th, tw, th))
 
     def nonzero_pages(self):
         return sum(1 for p in self.pages if not self.page_is_zero(p))
 
     def get_pixel(self, frame, x, y):
-        return tuple(self.read(frame * FRAME_BYTES + (y * W + x) * 3, 3))
+        X, Y = frame_origin(frame)
+        return tuple(self.read(addr(X + x, Y + y), 3))
 
     def set_pixel(self, frame, x, y, rgb):
-        self.write(frame * FRAME_BYTES + (y * W + x) * 3, bytes(rgb))
+        X, Y = frame_origin(frame)
+        self.write(addr(X + x, Y + y), bytes(rgb))
 
     def frames_in_use(self):
-        return self._chunks_in_use(FRAME_BYTES)
+        return self._tiles_in_use("hd")
 
     # -- save formats --
 
     def save(self, path, fmt=None):
         fmt = fmt or self.format
-        size, w, h = ((FRAME_BYTES, W, H) if fmt == "hd"
-                      else (FRAME4K_BYTES, W4K, H4K))
+        w, h = (W, H) if fmt == "hd" else (W4K, H4K)
         with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
-            for i in self._chunks_in_use(size):
+            for i in self._tiles_in_use(fmt):
                 name = (frame_name(i) if fmt == "hd" else str(i + 1)) + ".png"
                 z.writestr(zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0)),
-                           png_encode(self.read(i * size, size), w, h))
+                           png_encode(self.read_rect(*frame_origin(i, fmt), w, h), w, h))
 
     @classmethod
     def load(cls, path):
@@ -233,37 +266,36 @@ class Instance:
                 if seen and seen != fmt:
                     raise ValueError("zip mixes HD and 4K frame names")
                 seen = fmt
-                w, h, size = (W, H, FRAME_BYTES) if fmt == "hd" else (W4K, H4K, FRAME4K_BYTES)
+                w, h = (W, H) if fmt == "hd" else (W4K, H4K)
                 try:
                     _, _, rgb = png_decode(z.read(info), w, h)
                 except ValueError as e:
                     raise ValueError(f"{info.filename}: {e}") from None
-                inst.write(idx * size, rgb)
+                inst.write_rect(*frame_origin(idx, fmt), w, h, rgb)
         inst.format = seen or "hd"
         return inst
 
     # -- frames as images --
 
     def export_frame(self, frame):
-        return png_encode(self.read(frame * FRAME_BYTES, FRAME_BYTES), W, H)
+        return png_encode(self.read_rect(*frame_origin(frame), W, H), W, H)
 
     def import_frame(self, frame, png):
         _, _, rgb = png_decode(png, W, H)
-        self.write(frame * FRAME_BYTES, rgb)
+        self.write_rect(*frame_origin(frame), W, H, rgb)
 
     def thumbnail(self, step=20):
-        """Downsampled picture of the whole 26x26 mosaic as PNG bytes."""
-        tw, th = W // step, H // step
-        out = bytearray(tw * GRID * th * GRID * 3)
-        ow = tw * GRID * 3
-        for f in self.frames_in_use():
-            fy, fx = divmod(f, GRID)
-            for ty in range(th):
-                row = self.read(f * FRAME_BYTES + ty * step * W * 3, W * 3)
-                dst = (fy * th + ty) * ow + fx * tw * 3
-                for c in range(3):
-                    out[dst + c:dst + tw * 3:3] = row[c::step * 3][:tw]
-        return png_encode(bytes(out), tw * GRID, th * GRID)
+        """Downsampled picture of the whole mosaic as PNG bytes."""
+        tw, th = MOSAIC_W // step, MOSAIC_H // step
+        out = bytearray(tw * th * 3)
+        rows = {p * PAGE // STRIDE for p in self.pages} | {((p + 1) * PAGE - 1) // STRIDE for p in self.pages}
+        for ty in range(th):
+            if ty * step not in rows:
+                continue
+            row = self.read(ty * step * STRIDE, STRIDE)
+            for c in range(3):
+                out[ty * tw * 3 + c:(ty + 1) * tw * 3:3] = row[c::step * 3][:tw]
+        return png_encode(bytes(out), tw, th)
 
     # -- embedded objects --
 
@@ -426,15 +458,14 @@ def hexdump(data, addr):
 
 
 def where(a):
-    frame, off = divmod(a, FRAME_BYTES)
-    y, x = divmod(off // 3, W)
-    off4 = a % FRAME4K_BYTES
+    Y, X = divmod(a // 3, MOSAIC_W)
+    frame = Y // H * GRID + X // W
     return "\n".join([
         f"address  {a} (0x{a:x})",
         f"page     {a // PAGE} + {a % PAGE}",
-        f"frame    {frame_name(frame)} (#{frame}) pixel {x},{y} channel {'RGB'[off % 3]}",
-        f"mosaic   {frame % GRID * W + x},{frame // GRID * H + y}",
-        f"4k image {a // FRAME4K_BYTES + 1}.png pixel {off4 // 3 % W4K},{off4 // 3 // W4K}",
+        f"mosaic   {X},{Y} channel {'RGB'[a % 3]}",
+        f"frame    {frame_name(frame)} (#{frame}) pixel {X % W},{Y % H}",
+        f"4k image {Y // H4K * (GRID // 2) + X // W4K + 1}.png pixel {X % W4K},{Y % H4K}",
     ])
 
 

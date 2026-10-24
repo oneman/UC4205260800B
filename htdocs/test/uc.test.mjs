@@ -16,7 +16,8 @@ test('geometry matches the README', () => {
   assert.equal(uc.frameName(0), 'aa');
   assert.equal(uc.frameName(675), 'zz');
   assert.equal(uc.frameIndex('bb'), 27);
-  assert.equal(uc.parseAddr('ab:10,20'), 6336030);
+  assert.equal(uc.parseAddr('ab:10,20'), 20 * uc.STRIDE + (1920 + 10) * 3);
+  assert.equal(uc.STRIDE, 149760);
   assert.equal(uc.parseAddr('p2'), 8192);
   assert.equal(uc.where(4201066496).frameName, 'zz');
 });
@@ -43,6 +44,31 @@ async function roundTrip(fmt) {
   assert.equal(back.format, fmt);
   for (const a of [0, uc.BYTES - msg.length, 7 * uc.FRAME_BYTES - 2]) assert.deepEqual(back.read(a, msg.length), msg);
 }
+test('memory is one row-major 49920-wide framebuffer', () => {
+  const inst = new uc.Instance();
+  inst.write(uc.STRIDE + 3, new Uint8Array([1, 2, 3]));           // mosaic pixel 1,1
+  assert.deepEqual(inst.getPixel(0, 1, 1), [1, 2, 3]);
+  inst.write(5760, new Uint8Array([9, 9, 9]));                    // mosaic pixel 1920,0
+  assert.deepEqual(inst.getPixel(1, 0, 0), [9, 9, 9]);
+  const run = Uint8Array.from({ length: 30 }, (_, i) => i + 1);
+  inst.write(5760 - 15, run);                                     // crosses from aa into ab
+  assert.deepEqual(inst.read(5760 - 15, 30), run);
+  assert.deepEqual(inst.getPixel(0, 1915, 0), [1, 2, 3]);
+  assert.deepEqual(inst.getPixel(1, 0, 0), [16, 17, 18]);
+});
+
+test('4K frame 1 is aa ab over ba bb', async () => {
+  const inst = new uc.Instance();
+  ['aa', 'ab', 'ba', 'bb'].forEach((n, i) => inst.setPixel(uc.frameIndex(n), 7, 7, 10 * (i + 1), 0, 0));
+  const entries = await uc.zipRead(await inst.save('4k'));
+  assert.deepEqual(entries.map((e) => e.name), ['1.png']);
+  const big = await uc.pngDecode(await entries[0].read(), uc.W4K, uc.H4K);
+  const px = (x, y) => big[(y * uc.W4K + x) * 3];
+  assert.deepEqual([px(7, 7), px(1927, 7), px(7, 1087), px(1927, 1087)], [10, 20, 30, 40]);
+  const back = await uc.Instance.load(await inst.save('4k'));
+  assert.deepEqual(back.frames.map((f, i) => (f ? i : -1)).filter((i) => i >= 0), [0, 1, 26, 27]);
+});
+
 test('HD zip round trip', () => roundTrip('hd'));
 test('4K zip round trip', () => roundTrip('4k'));
 

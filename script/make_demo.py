@@ -4,7 +4,7 @@
     python3 script/make_demo.py htdocs/demo.zip
 
 Layout: aa title, ab Game of Life board (stored as pixels), ac skirmish,
-objects from page 987188 (frame za onward), tick log in zz once a cart runs.
+objects from page 987188 (the top of grid row z), tick log in the bottom 28 mosaic rows.
 """
 import math
 import os
@@ -66,7 +66,7 @@ def title_frame():
     centered(buf, 280, "LUSH STEMSYS UNIT COMPUTER", 6, (200, 220, 255))
     centered(buf, 360, "UC4205260800B", 18, (255, 204, 51))
     centered(buf, 530, "4205260800 BYTES  1026675 PAGES  676 FRAMES", 4, (230, 230, 230))
-    centered(buf, 600, "AB LIFE   AC SKIRMISH   ZA OBJECTS   ZZ TICK LOG", 4, (126, 231, 135))
+    centered(buf, 600, "AB LIFE   AC SKIRMISH   ROW Z OBJECTS + TICK LOG", 4, (126, 231, 135))
     centered(buf, 680, "PIX OR IT DIDN'T HAPPEN", 5, (255, 123, 114))
     centered(buf, 780, "OPEN THE OBJECTS PANEL AND PRESS RUN", 3, (160, 170, 190))
     return bytes(buf)
@@ -106,8 +106,8 @@ def life_frame():
 
 def main(out):
     inst = uc.Instance()
-    inst.write(uc.frame_index("aa") * uc.FRAME_BYTES, title_frame())
-    inst.write(uc.frame_index("ab") * uc.FRAME_BYTES, life_frame())
+    inst.write_rect(*uc.frame_origin(uc.frame_index("aa")), uc.W, uc.H, title_frame())
+    inst.write_rect(*uc.frame_origin(uc.frame_index("ab")), uc.W, uc.H, life_frame())
     for name, path, kind, frames in [
         ("README.md", "README.md", "text/markdown", None),
         ("SPEC.md", "SPEC.md", "text/markdown", None),

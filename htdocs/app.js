@@ -223,7 +223,12 @@ $('demo').onclick = async () => {
 $('new').onclick = () => { stopCart(); inst = new uc.Instance(); fileName = 'instance'; fitAll(); refreshAll(); };
 async function save(fmt) {
   status('Encoding PNGs…');
-  const data = await inst.save(fmt);
+  // Hold the cart still so the saved frames and tick log are one consistent snapshot.
+  const wasPaused = cart ? cart.paused : true;
+  if (cart) cart.paused = true;
+  while (cart && cart.busy) await new Promise((r) => setTimeout(r, 5));
+  let data;
+  try { data = await inst.save(fmt); } finally { if (cart) cart.paused = wasPaused; }
   download(data, `${fileName.replace(/\.zip$/, '')}-${fmt}.zip`);
   status(`Saved ${data.length} bytes as ${fmt.toUpperCase()} zip.`);
 }
@@ -277,7 +282,7 @@ $('goto').onkeydown = (e) => {
   if (e.key !== 'Enter') return;
   const v = e.target.value.trim();
   try {
-    if (/^[a-z]{2}$/.test(v)) { fitFrame(uc.frameIndex(v)); inspect = uc.frameIndex(v) * uc.FRAME_BYTES; }
+    if (/^[a-z]{2}$/.test(v)) { fitFrame(uc.frameIndex(v)); inspect = uc.addr(...uc.frameOrigin(uc.frameIndex(v))); }
     else {
       inspect = uc.parseAddr(v);
       const w = uc.where(inspect);
@@ -335,7 +340,7 @@ window.addEventListener('mousemove', (e) => {
     const [X, Y] = toMosaic(e);
     if (inMosaic(X, Y)) {
       const [f, x, y] = uc.Instance.mosaic(X, Y);
-      hover = f * uc.FRAME_BYTES + (y * uc.W + x) * 3;
+      hover = uc.addr(X, Y);
       const w = uc.where(hover), [r, g, b] = inst.getPixel(f, x, y);
       status(`${w.frameName} ${x},${y}  mosaic ${X},${Y}  addr ${hover} (0x${hover.toString(16)})  page ${w.page}+${w.pageOffset}  rgb ${r},${g},${b}`);
     }
@@ -355,8 +360,7 @@ window.addEventListener('mousemove', (e) => {
 });
 window.addEventListener('mouseup', () => {
   if (drag && !drag.moved && mode === 'view' && inMosaic(drag.X, drag.Y)) {
-    const [f, x, y] = uc.Instance.mosaic(drag.X, drag.Y);
-    inspect = f * uc.FRAME_BYTES + (y * uc.W + x) * 3;
+    inspect = uc.addr(drag.X, drag.Y);
     showInspector();
   }
   if (drag && mode === 'draw' && !drag.pan) showStats();

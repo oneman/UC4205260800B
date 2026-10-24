@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import zipfile
 import zlib
 
 import uc
@@ -45,7 +46,7 @@ class Memory(unittest.TestCase):
             inst.write(uc.BYTES - 1, b"ab")
 
     def test_addresses(self):
-        self.assertEqual(uc.parse_addr("ab:10,20"), 6336030)
+        self.assertEqual(uc.parse_addr("ab:10,20"), 20 * uc.STRIDE + (uc.W + 10) * 3)
         self.assertEqual(uc.parse_addr("p2"), 8192)
         self.assertEqual(uc.parse_addr("0x10"), 16)
         self.assertEqual(uc.frame_name(675), "zz")
@@ -73,6 +74,29 @@ class Formats(unittest.TestCase):
 
     def test_4k(self):
         self.round_trip("4k")
+
+    def test_4k_tiles_are_2x2_blocks_of_hd_tiles(self):
+        inst = uc.Instance()
+        for i, name in enumerate(["aa", "ab", "ba", "bb", "zz"]):
+            f = uc.frame_index(name)
+            inst.set_pixel(f, 0, 0, (i + 1, 0, 0))
+            inst.set_pixel(f, uc.W - 1, uc.H - 1, (0, i + 1, 0))
+        self.assertEqual(uc.parse_addr("ab:0,0"), uc.W * 3)
+        self.assertEqual(uc.parse_addr("ba:0,0"), uc.H * uc.STRIDE)
+        hd, k4 = os.path.join(self.dir, "hd.zip"), os.path.join(self.dir, "4k.zip")
+        inst.save(hd, "hd")
+        inst.save(k4, "4k")
+        with zipfile.ZipFile(k4) as z:
+            self.assertEqual(sorted(z.namelist()), ["1.png", "169.png"])
+            _, _, big = uc.png_decode(z.read("1.png"), uc.W4K, uc.H4K)
+        with zipfile.ZipFile(hd) as z:
+            self.assertEqual(sorted(z.namelist()), ["aa.png", "ab.png", "ba.png", "bb.png", "zz.png"])
+            for name, (qx, qy) in {"aa": (0, 0), "ab": (1, 0), "ba": (0, 1), "bb": (1, 1)}.items():
+                _, _, tile = uc.png_decode(z.read(name + ".png"), uc.W, uc.H)
+                for y in range(0, uc.H, 97):
+                    o = ((qy * uc.H + y) * uc.W4K + qx * uc.W) * 3
+                    self.assertEqual(big[o:o + uc.W * 3], tile[y * uc.W * 3:(y + 1) * uc.W * 3], (name, y))
+        self.assertEqual(uc.Instance.load(k4).read_rect(0, 0, uc.W4K, uc.H4K), big)
 
     def test_png_filters(self):
         w, h = 33, 17
@@ -145,6 +169,20 @@ class CrossLanguage(unittest.TestCase):
             self.assertEqual(back.read(987300 * uc.PAGE, 6), b"from C")
             self.assertIn(b"note", self.run_c("ls", b))
 
+    def test_c_4k_matches_python_4k(self):
+        inst = sample()
+        for name in ("aa", "ab", "ba", "bb"):
+            inst.set_pixel(uc.frame_index(name), 5, 5, (200, 100, 50))
+        a, b, c = (os.path.join(self.dir, n) for n in ("a.zip", "b.zip", "c.zip"))
+        inst.save(a, "hd")
+        inst.save(b, "4k")
+        self.run_c("convert", a, c, "--4k")
+        with zipfile.ZipFile(b) as zb, zipfile.ZipFile(c) as zc:
+            self.assertEqual(sorted(zb.namelist()), sorted(zc.namelist()))
+            for n in zb.namelist():
+                self.assertEqual(uc.png_decode(zb.read(n))[2], uc.png_decode(zc.read(n))[2], n)
+        self.assertEqual(self.run_c("where", "ba:0,0").split()[1], str(uc.H * uc.STRIDE).encode())
+
     def test_filtered_png_import(self):
         path, png = os.path.join(self.dir, "x.zip"), os.path.join(self.dir, "frame.png")
         rgb = bytes((i * 13) & 255 for i in range(uc.FRAME_BYTES))
@@ -153,7 +191,7 @@ class CrossLanguage(unittest.TestCase):
         uc.Instance().save(path)
         self.run_c("import", path, "ac", png)
         back = uc.Instance.load(path)
-        self.assertEqual(back.read(2 * uc.FRAME_BYTES, uc.FRAME_BYTES), rgb)
+        self.assertEqual(back.read_rect(*uc.frame_origin(2), uc.W, uc.H), rgb)
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")
     def test_js_reads_c_and_python(self):

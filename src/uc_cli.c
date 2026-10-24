@@ -51,7 +51,7 @@ static int parse_addr(const char *s, uint64_t *out)
         int f = uc_frame_index(name);
         unsigned x, y;
         if (f < 0 || sscanf(colon + 1, "%u,%u", &x, &y) != 2 || x >= UC_W || y >= UC_H) return -1;
-        *out = (uint64_t)f * UC_FRAME_BYTES + ((uint64_t)y * UC_W + x) * 3;
+        *out = uc_addr(f % UC_GRID * UC_W + x, f / UC_GRID * UC_H + y);
         return 0;
     }
     *out = strtoull(s, &end, 0);
@@ -151,18 +151,15 @@ static int cmd_facts(int prime)
 
 static void cmd_where(uint64_t a)
 {
-    unsigned frame = (unsigned)(a / UC_FRAME_BYTES);
-    uint64_t off = a % UC_FRAME_BYTES;
-    unsigned px = (unsigned)(off / 3), x = px % UC_W, y = px / UC_W;
-    uint64_t off4 = a % UC_FRAME4K_BYTES;
+    unsigned X = (unsigned)(a % UC_STRIDE / 3), Y = (unsigned)(a / UC_STRIDE);
+    unsigned frame = Y / UC_H * UC_GRID + X / UC_W;
     char name[3];
     uc_frame_name(frame, name);
     printf("address  %" PRIu64 " (0x%" PRIx64 ")\n", a, a);
     printf("page     %" PRIu64 " + %" PRIu64 "\n", a / UC_PAGE, a % UC_PAGE);
-    printf("frame    %s (#%u) pixel %u,%u channel %c\n", name, frame, x, y, "RGB"[off % 3]);
-    printf("mosaic   %u,%u\n", (frame % UC_GRID) * UC_W + x, (frame / UC_GRID) * UC_H + y);
-    printf("4k image %" PRIu64 ".png pixel %" PRIu64 ",%" PRIu64 "\n", a / UC_FRAME4K_BYTES + 1,
-           off4 / 3 % UC_W4K, off4 / 3 / UC_W4K);
+    printf("mosaic   %u,%u channel %c\n", X, Y, "RGB"[a % 3]);
+    printf("frame    %s (#%u) pixel %u,%u\n", name, frame, X % UC_W, Y % UC_H);
+    printf("4k image %u.png pixel %u,%u\n", Y / UC_H4K * (UC_GRID / 2) + X / UC_W4K + 1, X % UC_W4K, Y % UC_H4K);
 }
 
 static void hexdump(const uc_t *u, uint64_t a, size_t len)
@@ -209,7 +206,7 @@ static void stat(const uc_t *u, enum uc_format fmt)
     puts("frames    (# = has data)\n          abcdefghijklmnopqrstuvwxyz");
     for (unsigned r = 0; r < UC_GRID; r++) {
         for (unsigned c = 0; c < UC_GRID; c++) {
-            int used = !uc_range_is_zero(u, (uint64_t)(r * UC_GRID + c) * UC_FRAME_BYTES, UC_FRAME_BYTES);
+            int used = !uc_rect_is_zero(u, c * UC_W, r * UC_H, UC_W, UC_H);
             line[c] = used ? '#' : '.';
             frames += used;
         }
@@ -237,7 +234,7 @@ int main(int argc, char **argv)
         printf("pages     %u x %u bytes\n", UC_PAGES, UC_PAGE);
         printf("HD        %u frames of %ux%u RGB (aa..zz, 26x26 grid)\n", UC_FRAMES, UC_W, UC_H);
         printf("4K        %u frames of %ux%u RGB (1..169, 13x13 grid)\n", UC_FRAMES4K, UC_W4K, UC_H4K);
-        printf("mosaic    %ux%u RGB\n", UC_MOSAIC_W, UC_MOSAIC_H);
+        printf("mosaic    %ux%u RGB, row-major, %u bytes per row\n", UC_MOSAIC_W, UC_MOSAIC_H, UC_STRIDE);
         printf("objects   auto-placed from page %u\n", UC_OBJ_AREA_PAGE);
         printf("tick log  pages %u..%u\n", UC_TICK_PAGE, UC_PAGES - 1);
         return 0;
@@ -318,7 +315,7 @@ int main(int argc, char **argv)
         if (f < 0) { fprintf(stderr, "uc: bad frame name %s (aa..zz)\n", argv[3]); ret = 1; }
         else if (!strcmp(cmd, "export")) {
             uint8_t *png; size_t len;
-            uc_read(u, (uint64_t)f * UC_FRAME_BYTES, rgb, UC_FRAME_BYTES);
+            uc_rect_read(u, f % UC_GRID * UC_W, f / UC_GRID * UC_H, UC_W, UC_H, rgb);
             FILE *o = fopen(argv[4], "wb");
             if (uc_png_encode(rgb, UC_W, UC_H, &png, &len) || !o || fwrite(png, len, 1, o) != 1) ret = die(argv[4]);
             else free(png);
@@ -329,7 +326,7 @@ int main(int argc, char **argv)
             uint8_t *png = in ? slurp(in, &len) : NULL;
             if (in) fclose(in);
             if (!png || uc_png_decode(png, len, UC_W, UC_H, rgb) ||
-                uc_write(u, (uint64_t)f * UC_FRAME_BYTES, rgb, UC_FRAME_BYTES) || uc_save(u, file, fmt))
+                uc_rect_write(u, f % UC_GRID * UC_W, f / UC_GRID * UC_H, UC_W, UC_H, rgb) || uc_save(u, file, fmt))
                 ret = die(argv[4]);
             free(png);
         }

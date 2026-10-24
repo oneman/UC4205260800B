@@ -22,40 +22,46 @@ linear memory, addressed from `0` to `4205260799`. Unwritten memory is zero.
 
 All of these are verified by `uc facts` (C) and `uc.py facts` (Python).
 
-## 2. Frames and the mosaic
+## 2. The mosaic and its frames
 
-Memory is cut into 676 consecutive **HD frames**. Frame `i` holds bytes
-`[i × 6220800, (i + 1) × 6220800)` as row-major 8-bit RGB pixels:
+Memory is **one row-major 49920 × 28080 RGB framebuffer**, the mosaic. Each
+mosaic row is **149760 bytes** (49920 × 3), and mosaic pixel `(X, Y)` lives at
 
 ```
-addr(i, x, y) = i * 6220800 + (y * 1920 + x) * 3      # R, G, B at addr, addr+1, addr+2
+addr(X, Y) = Y * 149760 + X * 3          # R, G, B at addr, addr+1, addr+2
 ```
 
-Each frame has a two-letter name: `aa` is frame 0, `ab` is frame 1, …, `az` is
-frame 25, `ba` is frame 26, …, `zz` is frame 675. The first letter is the row
-and the second letter is the column of the frame in the 26 × 26 grid.
+The mosaic is cut into a 26 × 26 grid of **HD frames**, each a 1920 × 1080
+tile. Frame `f` is the tile at column `f % 26`, row `f / 26`, so its pixel
+`(x, y)` is mosaic pixel `((f % 26) * 1920 + x, (f / 26) * 1080 + y)`.
 
-The **mosaic** is the single 49920 × 28080 picture made by laying the HD frames
-out in that grid. Mosaic pixel `(X, Y)` is frame
-`(Y / 1080) * 26 + (X / 1920)` at local pixel `(X % 1920, Y % 1080)`.
+Each frame has a two-letter name: `aa` is frame 0 (top left), `ab` is frame 1
+(to its right), …, `az` is frame 25 (top right), `ba` is frame 26 (below `aa`),
+…, `zz` is frame 675 (bottom right). The first letter is the row and the
+second letter is the column.
 
-Note that the mosaic is *tiled*, not one long row-major scanline: a row of the
-mosaic crosses 26 different frames. The tiling is what makes each frame a
-real, self-contained screen.
+Because memory is row-major across the whole mosaic, a frame is *not* a
+contiguous run of bytes: one frame row is 5760 bytes, and the next frame row
+starts 149760 bytes later. A 4096-byte page covers 1365⅓ pixels of a single
+mosaic row (or the end of one row and the start of the next).
+
+The same mosaic can also be cut into a 13 × 13 grid of **4K frames**, each a
+3840 × 2160 tile. 4K frame `k` (0-based) is the tile at column `k % 13`, row
+`k / 13`, which is exactly the 2 × 2 block of HD frames at rows `2(k/13)`,
+`2(k/13)+1` and columns `2(k%13)`, `2(k%13)+1`.
 
 ## 3. Save formats
 
 An instance is saved as a zip file of PNG images. All-zero frames are omitted.
-Both formats describe the same bytes, so tools convert between them freely.
+Both formats describe the same mosaic, so tools convert between them freely.
 
 **HD format**: entries `aa.png` … `zz.png`, each a 1920 × 1080 8-bit RGB PNG
-holding one HD frame.
+holding one HD frame (tile).
 
-**4K format**: entries `1.png` … `169.png`, each a 3840 × 2160 8-bit RGB PNG.
-Image `k` holds bytes `[(k − 1) × 24883200, k × 24883200)` in row-major order,
-i.e. exactly HD frames `4(k−1)` … `4(k−1)+3` in sequence. (Because the bytes are
-wrapped at 3840 pixels, a 4K image does not look like four HD frames side by
-side; it is the same memory at a different stride.)
+**4K format**: entries `1.png` … `169.png`, each a 3840 × 2160 8-bit RGB PNG
+holding one 4K frame (tile). `1.png` has `aa` and `ab` in its top half and
+`ba` and `bb` in its bottom half; `2.png` holds `ac ad / bc bd`; `14.png`
+holds `ca cb / da db`; `169.png` holds `yy yz / zy zz`.
 
 Rules for readers:
 
@@ -93,11 +99,12 @@ frames: ab
 * Scanners look for `UCOBJ1\n` at the start of every page.
 
 By convention, tools placing an object automatically use the first run of
-all-zero pages starting at page **987188** (the first page fully inside frame
-`za`, the bottom row of the grid) and ending before the tick log.
+all-zero pages starting at page **987188** (the first page that starts in
+mosaic row 27000, the top row of grid row `z`) and ending before the tick log.
 
-Because every object is just bytes, it is also visible as pixels: text shows
-up as a speckled band of colour.
+Because every object is just bytes, it is also visible as pixels: an object
+shows up as a speckled horizontal streak running across the top of grid row
+`z` (one page is about 1365 pixels of one mosaic row).
 
 ## 5. Carts
 
@@ -117,14 +124,14 @@ function tick(uc, t, input) { ... }  // called once per system tick
 `KeyboardEvent.key` values held down), `pressed` (keys pressed since the last
 tick) and `clicks` (`{frame, x, y, button}` in frame coordinates).
 
-The host copies the cart's frames in, and after each tick copies back only
-the 64 × 64 tiles that changed. The cart's state *is* its pixels: save the
+The host copies the cart's frames in (each as a packed 1920 × 1080 RGB
+image), and after each tick copies back only the 64 × 64 tiles that changed. The cart's state *is* its pixels: save the
 instance and the game is saved too.
 
 ## 6. Tick log
 
-The last 1024 pages (pages 1025651 … 1026674, inside frame `zz`) hold the
-**tick log**, a ring buffer the host writes as it drives the system.
+The last 1024 pages (pages 1025651 … 1026674, the bottom 28 rows of the
+mosaic, running across frames `za` … `zz`) hold the **tick log**, a ring buffer the host writes as it drives the system.
 
 Page 1025651 is the header (little-endian):
 
